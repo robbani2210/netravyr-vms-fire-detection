@@ -4,6 +4,8 @@ import altair as alt
 import base64
 import numpy as np
 from datetime import datetime, timedelta
+import os
+import base64
 
 # ================================
 # PAGE CONFIG
@@ -11,13 +13,251 @@ from datetime import datetime, timedelta
 st.title("Thermal Flame Detection")
 
 # ================================
-# FUNGSI UNTUK VIDEO TANPA KONTROL
+# FUNGSI UNTUK MEMOTONG VIDEO YANG LEBIH BAIK
 # ================================
-def autoplay_video(video_path):
-    """Menampilkan video tanpa kontrol, autoplay, loop, dan mute"""
+def cut_video_by_duration(input_video_path, duration_seconds, output_video_path):
+    """Memotong video berdasarkan durasi yang ditentukan dengan codec yang kompatibel"""
     try:
+        import cv2
+        import os
+        
+        # Baca video input
+        cap = cv2.VideoCapture(input_video_path)
+        
+        if not cap.isOpened():
+            st.error(f"❌ Cannot open video: {input_video_path}")
+            return False
+        
+        # Dapatkan properti video
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        original_duration = total_frames / fps if fps > 0 else 0
+        
+        st.info(f"📹 Original video: {original_duration:.1f}s, {fps:.1f} FPS, {total_frames} frames")
+        
+        # Jika FPS = 0, gunakan nilai default
+        if fps == 0:
+            fps = 30
+            st.warning("⚠️ FPS not detected, using default 30 FPS")
+        
+        # Hitung frame yang dibutuhkan untuk durasi yang diminta
+        target_frames = int(duration_seconds * fps)
+        
+        # Jika durasi yang diminta lebih panjang dari video asli, gunakan video asli
+        if duration_seconds > original_duration:
+            st.warning(f"⚠️ Requested duration ({duration_seconds}s) is longer than original video ({original_duration:.1f}s). Using original video.")
+            cap.release()
+            import shutil
+            shutil.copy2(input_video_path, output_video_path)
+            return True
+        
+        # Setup video writer - gunakan codec H.264 yang lebih kompatibel
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Jika width/height tidak terdeteksi, gunakan nilai dari frame pertama
+        if width == 0 or height == 0:
+            ret, frame = cap.read()
+            if ret:
+                height, width = frame.shape[:2]
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset ke frame 0
+            else:
+                width, height = 640, 480
+                st.warning("⚠️ Video dimensions not detected, using default 640x480")
+        
+        st.info(f"🎬 Output video: {width}x{height}, {fps} FPS, {target_frames} frames")
+        
+        # Buat VideoWriter
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+        
+        if not out.isOpened():
+            st.error("❌ Cannot create output video writer, trying alternative codec...")
+            # Coba codec alternatif
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+            if not out.isOpened():
+                st.error("❌ Failed to create video writer with any codec")
+                cap.release()
+                return False
+        
+        # Progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Baca dan tulis frame sesuai durasi
+        frames_written = 0
+        for frame_idx in range(target_frames):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Pastikan frame tidak kosong
+            if frame is not None and frame.size > 0:
+                out.write(frame)
+                frames_written += 1
+            
+            # Update progress setiap 10 frame
+            if frame_idx % 10 == 0:
+                progress = (frame_idx + 1) / target_frames
+                progress_bar.progress(progress)
+                status_text.text(f"🔄 Cutting video: {frames_written}/{target_frames} frames")
+        
+        # Release resources
+        cap.release()
+        out.release()
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Cek jika video berhasil dibuat
+        if os.path.exists(output_video_path) and os.path.getsize(output_video_path) > 0:
+            actual_duration = frames_written / fps
+            output_size = os.path.getsize(output_video_path) / (1024*1024)
+            st.success(f"✅ Video cut successfully: {actual_duration:.1f}s ({frames_written} frames, {output_size:.2f} MB)")
+            return True
+        else:
+            st.error("❌ Output video file is empty or not created")
+            return False
+        
+    except Exception as e:
+        st.error(f"❌ Error cutting video: {str(e)}")
+        return False
+
+def get_detection_video(duration_seconds):
+    """
+    Fungsi untuk mendapatkan video deteksi AI yang sudah dipotong sesuai durasi
+    """
+    import os
+    import tempfile
+    
+    # Path video hasil deteksi AI (yang sudah ada bounding box)
+    AI_DETECTION_VIDEO = r"C:\Users\ROBBANI\Downloads\netraMVA\Camera Hanwha\Dashboard\Design_2\Demo\1-1.mp4"
+    
+    # Cek jika video hasil deteksi AI ada
+    if not os.path.exists(AI_DETECTION_VIDEO):
+        st.error(f"❌ AI detection video not found: {AI_DETECTION_VIDEO}")
+        st.info("💡 Please make sure the file '1-1.mp4' exists in the Demo folder")
+        return None
+    
+    # Test baca video asli dulu
+    st.info("🔍 Testing original video...")
+    import cv2
+    test_cap = cv2.VideoCapture(AI_DETECTION_VIDEO)
+    if test_cap.isOpened():
+        ret, test_frame = test_cap.read()
+        if ret and test_frame is not None:
+            st.success(f"✅ Original video OK: {test_frame.shape[1]}x{test_frame.shape[0]}")
+        else:
+            st.error("❌ Cannot read frames from original video")
+        test_cap.release()
+    else:
+        st.error("❌ Cannot open original video file")
+    
+    # Buat file output sementara
+    temp_dir = tempfile.gettempdir()
+    output_filename = f"detection_{duration_seconds}s.mp4"
+    output_path = os.path.join(temp_dir, output_filename)
+    
+    # Hapus file lama jika ada
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    
+    # Potong video sesuai durasi
+    st.info(f"✂️ Cutting AI detection video to {duration_seconds} seconds...")
+    success = cut_video_by_duration(AI_DETECTION_VIDEO, duration_seconds, output_path)
+    
+    if success and os.path.exists(output_path):
+        return output_path
+    else:
+        st.error("❌ Failed to cut video, using original video")
+        return AI_DETECTION_VIDEO
+
+# ================================
+# FUNGSI UNTUK VIDEO DENGAN KONTROL (FIXED)
+# ================================
+def display_video_with_controls(video_path):
+    """Menampilkan video dengan kontrol play/pause"""
+    try:
+        if not video_path or not os.path.exists(video_path):
+            st.error(f"❌ Video file not found: {video_path}")
+            return False
+            
+        # Cek ukuran file
+        file_size = os.path.getsize(video_path)
+        if file_size == 0:
+            st.error("❌ Video file is empty (0 bytes)")
+            return False
+        
+        # Test video dengan OpenCV dulu
+        import cv2
+        test_cap = cv2.VideoCapture(video_path)
+        if test_cap.isOpened():
+            ret, frame = test_cap.read()
+            test_cap.release()
+        else:
+            st.error("❌ Video test failed - cannot open file")
+                    
+        # Baca video sebagai bytes
         with open(video_path, "rb") as video_file:
             video_bytes = video_file.read()
+        
+        # Tampilkan video dengan kontrol menggunakan st.video
+        st.video(video_bytes, format="video/mp4")
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error loading video: {e}")
+        return False
+
+# ================================
+# FUNGSI ALTERNATIF JIKA MASIH GAGAL
+# ================================
+def simple_video_cutter(input_path, duration_seconds):
+    """Alternatif sederhana untuk memotong video"""
+    try:
+        import subprocess
+        import tempfile
+        import os
+        
+        # Gunakan ffmpeg jika tersedia (lebih reliable)
+        output_path = os.path.join(tempfile.gettempdir(), f"cut_{duration_seconds}s.mp4")
+        
+        # Perintah ffmpeg untuk memotong video
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-t', str(duration_seconds),
+            '-c', 'copy',  # Copy tanpa re-encode
+            '-y',  # Overwrite output file
+            output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0 and os.path.exists(output_path):
+            st.success("✅ Video cut successfully with ffmpeg")
+            return output_path
+        else:
+            st.error(f"❌ FFmpeg failed: {result.stderr}")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ Alternative method failed: {e}")
+        return None
+
+# ================================
+# FUNGSI UNTUK VIDEO INPUT TANPA KONTROL (AUTOPLAY)
+# ================================
+def autoplay_video(video_path):
+    """Menampilkan video tanpa kontrol, autoplay, loop, dan mute untuk video input"""
+    try:
+        if not video_path or not os.path.exists(video_path):
+            st.error(f"❌ Video file not found: {video_path}")
+            return False
+            
+        with open(video_path, "rb") as video_file:
+            video_bytes = video_file.read()
+        
         video_base64 = base64.b64encode(video_bytes).decode()
         
         video_html = f"""
@@ -30,8 +270,9 @@ def autoplay_video(video_path):
         """
         st.markdown(video_html, unsafe_allow_html=True)
         return True
+        
     except Exception as e:
-        st.error(f"Error loading video: {e}")
+        st.error(f"❌ Error loading video: {e}")
         return False
 
 # ================================
@@ -42,6 +283,15 @@ if 'selected_event' not in st.session_state:
 
 if 'show_event_detail' not in st.session_state:
     st.session_state.show_event_detail = False
+
+if 'run_detection' not in st.session_state:
+    st.session_state.run_detection = False
+
+if 'detection_video_path' not in st.session_state:
+    st.session_state.detection_video_path = None
+
+if 'current_duration' not in st.session_state:
+    st.session_state.current_duration = 10
 
 # ================================
 # TABS
@@ -56,23 +306,22 @@ tabs = st.tabs([
 # ================================
 # DATA SAMPLE UNTUK OBJECT DETECTION MODEL
 # ================================
-# Generate lebih banyak data untuk scatter chart yang lebih informatif
+import pandas as pd
+import numpy as np
+
 np.random.seed(42)
 timestamps = pd.date_range(start='2023-10-26 08:00:00', end='2023-10-26 18:00:00', freq='10min')
 
-# Generate data deteksi api dengan variasi confidence dan bounding box
 detection_data = []
-for i, ts in enumerate(timestamps[:50]):  # Ambil 50 data point
+for i, ts in enumerate(timestamps[:50]):
     confidence = np.random.uniform(0.6, 0.98)
     
-    # Generate bounding box coordinates yang realistis
     x = np.random.randint(50, 700)
     y = np.random.randint(50, 500)
     width = np.random.randint(30, 100)
     height = np.random.randint(30, 100)
     bbox = f"[x:{x}, y:{y}, w:{width}, h:{height}]"
     
-    # Kategori berdasarkan confidence
     if confidence >= 0.9:
         event_type = "High Confidence Flame"
         color = "#00b050"
@@ -120,19 +369,6 @@ def style_confidence(val):
     else:
         return "color: #ff4b4b; font-weight: bold;"
 
-def color_severity(val):
-    color_map = {"High": "#ff4b4b", "Medium": "#e6a700", "Low": "#00b050"}
-    color = color_map.get(val, "#ffffff")
-    return f"background-color: {color}20; color: {color}; font-weight: bold; text-align:center;"
-
-def color_priority(val):
-    color_map = {"High": "#ff4b4b", "Medium": "#e6a700", "Low": "#00b050"}
-    color = color_map.get(val, "#666666")
-    return f"color: {color}; font-weight: bold;"
-
-# ================================
-# FUNGSI UNTUK DETECTION STATISTICS
-# ================================
 def get_detection_stats(df):
     """Generate detection statistics untuk dashboard"""
     total_detections = len(df)
@@ -149,55 +385,8 @@ def get_detection_stats(df):
         'high_confidence': high_confidence,
         'medium_confidence': medium_confidence,
         'low_confidence': low_confidence,
-        'avg_bbox_area': avg_bbox_area,
-        'high_confidence_rate': high_confidence / total_detections if total_detections > 0 else 0
+        'avg_bbox_area': avg_bbox_area
     }
-
-# ================================
-# FUNGSI UNTUK MENGAMBIL GAMBAR LOKAL
-# ================================
-def get_local_detection_image(second_index):
-    """
-    Fungsi untuk mendapatkan path gambar lokal berdasarkan index detik
-    Sesuaikan dengan struktur folder dan penamaan file Anda
-    """
-    import os
-    import glob
-    
-    # Definisikan path folder gambar lokal Anda
-    # Ganti dengan path folder Anda yang sebenarnya
-    IMAGE_FOLDER = r"C:\Users\ROBBANI\Downloads\netraMVA\Camera Hanwha\Dashboard\Design_2\Demo\1-1 frames"
-    
-    # Beberapa contoh pattern penamaan file yang mungkin:
-    patterns = [
-        f"detection_{second_index + 1}.jpg",
-        f"detection_{second_index + 1}.png", 
-        f"frame_{second_index + 1}.jpg",
-        f"frame_{second_index + 1}.png",
-        f"output_{second_index + 1}.jpg",
-        f"output_{second_index + 1}.png",
-        f"image_{second_index + 1}.jpg",
-        f"image_{second_index + 1}.png",
-    ]
-    
-    # Cari file yang sesuai dengan pattern
-    for pattern in patterns:
-        file_path = os.path.join(IMAGE_FOLDER, pattern)
-        if os.path.exists(file_path):
-            return file_path
-    
-    # Jika tidak ditemukan, coba cari file dengan ekstensi umum
-    all_images = glob.glob(os.path.join(IMAGE_FOLDER, "*.jpg")) + \
-                 glob.glob(os.path.join(IMAGE_FOLDER, "*.png")) + \
-                 glob.glob(os.path.join(IMAGE_FOLDER, "*.jpeg"))
-    
-    # Urutkan file dan ambil berdasarkan index (jika file terurut)
-    if all_images and second_index < len(all_images):
-        sorted_images = sorted(all_images)
-        return sorted_images[second_index]
-    
-    # Fallback ke GIF jika tidak ada gambar lokal
-    return "https://media.giphy.com/media/l0HlGSD6Q0eKzowb6/giphy.gif"
 
 # ================================
 # 🧭 TAB 1: AI MODEL OVERVIEW
@@ -211,7 +400,6 @@ with tabs[0]:
         
         col1, col2 = st.columns([1.2, 1.5])
 
-        # Kolom kiri: bounding box simulasi
         with col1:
             bbox_info = event['BOUNDING_BOX']
             st.markdown(f"""
@@ -233,7 +421,6 @@ with tabs[0]:
             """, unsafe_allow_html=True)
             st.caption(f"🔥 {event['EVENT_TYPE']} - Area: {event['BBOX_AREA']} pixels²")
 
-        # Kolom kanan: informasi deteksi
         with col2:
             st.markdown("### 📌 Detection Information")
             st.write(f"**Timestamp:** {event['TIMESTAMP']}")
@@ -255,7 +442,6 @@ with tabs[0]:
             if st.button("← Back to Overview"):
                 st.session_state.show_event_detail = False
                 st.session_state.selected_event = None
-                # TIDAK PERLU RERUN - akan otomatis update pada next interaction
 
     # ================================
     # MODE OVERVIEW
@@ -266,144 +452,84 @@ with tabs[0]:
         # Kolom kiri: kamera input
         with col_video1:
             st.markdown("#### 📹 Camera Input Stream")
-            VIDEO_PATH = r"C:\Users\ROBBANI\Downloads\netraMVA\Camera Hanwha\Dashboard\Design_2\Demo\1-1 real.mp4"
+            INPUT_VIDEO_PATH = r"C:\Users\ROBBANI\Downloads\netraMVA\Camera Hanwha\Dashboard\Design_2\Demo\1-1 real.mp4"
             
-            video_loaded = autoplay_video(VIDEO_PATH)
-            if not video_loaded:
-                fallback_gif = "https://media.giphy.com/media/l0HlGSD6Q0eKzowb6/giphy.gif"
-                st.image(fallback_gif, caption="Camera Input Stream", use_container_width=True)
+            if os.path.exists(INPUT_VIDEO_PATH):
+                video_loaded = autoplay_video(INPUT_VIDEO_PATH)
+                if not video_loaded:
+                    st.error("❌ Failed to load input video")
+            else:
+                st.error(f"❌ Input video not found: {INPUT_VIDEO_PATH}")
 
-            # --- Kontrol Deteksi (slider + tombol) ---
+            # Kontrol Deteksi
             st.markdown("")
             duration_seconds = st.slider(
-                "⏱️ Duration (seconds)",
+                "⏱️ Video Duration (seconds)",
                 min_value=1,
                 max_value=60,
-                value=10,
-                help="Select how many seconds of detection output to display",
+                value=st.session_state.current_duration,
+                help="Select duration to from AI detection video",
                 label_visibility="visible"
             )
+            
+            st.session_state.current_duration = duration_seconds
 
-            # TOMBOL DITUKAR POSISI DAN STRETCH SAMA LEBAR
+            # Tombol kontrol
             col_clear, col_run = st.columns(2)
 
             with col_clear:
-                clear_clicked = st.button("🗑️ Clear All", type="secondary", use_container_width=True)
-                if clear_clicked:
-                    st.session_state.detection_images = []
-                    st.session_state.current_card_index = 0
+                if st.button("🗑️ Clear", type="secondary", use_container_width=True):
+                    st.session_state.detection_video_path = None
                     st.session_state.run_detection = False
-                    st.session_state.current_second = 0
+                    st.rerun()
 
             with col_run:
-                run_clicked = st.button("🎬 Run Detection", type="primary", use_container_width=True)
-                if run_clicked:
+                if st.button("🎬 Run Detection", type="primary", use_container_width=True):
                     st.session_state.run_detection = True
-                    st.session_state.current_second = 0
-                    st.session_state.detection_images = []
-                    st.session_state.current_card_index = 0
+                    with st.spinner(f"✂️ Cutting AI detection video to {duration_seconds} seconds..."):
+                        # Coba metode ffmpeg dulu jika ada
+                        ffmpeg_path = simple_video_cutter(
+                            r"C:\Users\ROBBANI\Downloads\netraMVA\Camera Hanwha\Dashboard\Design_2\Demo\1-1.mp4",
+                            duration_seconds
+                        )
+                        if ffmpeg_path:
+                            st.session_state.detection_video_path = ffmpeg_path
+                        else:
+                            st.session_state.detection_video_path = get_detection_video(duration_seconds)
+                    st.rerun()
 
         # Kolom kanan: hasil AI detection
         with col_video2:
-            st.markdown("#### 🤖 AI Model Detection Output")
-
-            # Inisialisasi session state
-            if 'run_detection' not in st.session_state:
-                st.session_state.run_detection = False
-            if 'current_second' not in st.session_state:
-                st.session_state.current_second = 0
-            if 'detection_images' not in st.session_state:
-                st.session_state.detection_images = []
-            if 'current_card_index' not in st.session_state:
-                st.session_state.current_card_index = 0
-
-            # --- PROSES DETEKSI SEKALIGUS TANPA RERUN ---
-            if st.session_state.run_detection and len(st.session_state.detection_images) < duration_seconds:
-                # Progress indicator
-                progress = len(st.session_state.detection_images) / duration_seconds
-                # st.info(f"🔄 Generating detection output: {len(st.session_state.detection_images) + 1}/{duration_seconds} seconds")
-                # st.progress(progress)
+            st.markdown("#### 🤖 AI Detection Result")
+            
+            if st.session_state.run_detection and st.session_state.detection_video_path:
+                ai_video_path = st.session_state.detection_video_path
                 
-                # Generate semua gambar sekaligus dalam satu eksekusi
-                import time
-                while len(st.session_state.detection_images) < duration_seconds:
-                    second = len(st.session_state.detection_images)
-                    local_image_path = get_local_detection_image(second)
-                    st.session_state.detection_images.append({
-                        'image': local_image_path,
-                        'second': second + 1,
-                        'timestamp': f"Second {second + 1}"
-                    })
+                if os.path.exists(ai_video_path):
+                    file_size = os.path.getsize(ai_video_path) / (1024*1024)
+                    
+                    # Tampilkan video
+                    video_success = display_video_with_controls(ai_video_path)
+                    
+                    if not video_success:
+                        st.error("❌ Failed to display video")
+                        
+                else:
+                    st.error(f"❌ video file not found")
+                    
+            elif st.session_state.run_detection and not st.session_state.detection_video_path:
+                st.error("❌ No video path available")
                 
-                st.session_state.run_detection = False
-
-            # --- Tampilkan hasil deteksi ---
-            if st.session_state.detection_images:
-                current_data = st.session_state.detection_images[st.session_state.current_card_index]
-
-                # Tampilkan gambar lokal
-                try:
-                    st.image(
-                        current_data['image'],
-                        use_container_width=True,
-                        caption=f"Detection Output - {current_data['timestamp']}"
-                    )
-                except Exception as e:
-                    st.error(f"Error loading image: {e}")
-                    # Fallback ke GIF jika gambar lokal tidak tersedia
-                    st.image(
-                        "https://media.giphy.com/media/l0HlGSD6Q0eKzowb6/giphy.gif",
-                        use_container_width=True,
-                        caption=f"Detection Output - {current_data['timestamp']} (Fallback)"
-                    )
-
-                # --- Navigasi Card ---
-                total_cards = len(st.session_state.detection_images)
-                current_card = st.session_state.current_card_index + 1
-                
-                # Layout navigasi
-                col_nav1, col_nav2, col_nav3, col_nav4, col_nav5 = st.columns([1, 1, 2, 1, 1])
-                
-                with col_nav1:
-                    first_clicked = st.button("⏮️", help="First card", use_container_width=True)
-                    if first_clicked:
-                        st.session_state.current_card_index = 0
-                
-                with col_nav2:
-                    prev_clicked = st.button("◀️", help="Previous card", use_container_width=True)
-                    if prev_clicked and st.session_state.current_card_index > 0:
-                        st.session_state.current_card_index -= 1
-                
-                with col_nav3:
-                    st.markdown(f"""
-                    <div style="text-align: center; padding: 5px; background: #f0f2f6; border-radius: 8px;">
-                        <strong>Card {current_card} of {total_cards}</strong>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.progress(current_card / total_cards)
-                
-                with col_nav4:
-                    next_clicked = st.button("▶️", help="Next card", use_container_width=True)
-                    if next_clicked and st.session_state.current_card_index < total_cards - 1:
-                        st.session_state.current_card_index += 1
-                
-                with col_nav5:
-                    last_clicked = st.button("⏭️", help="Last card", use_container_width=True)
-                    if last_clicked:
-                        st.session_state.current_card_index = total_cards - 1
-
             else:
-                # Tampilan awal sebelum run
-                st.markdown("""
-                <div style="text-align: center; padding: 160px; border: 2px dashed #ccc; border-radius: 10px; background: #f9f9f9;">
-                    <h3 style="color: #666;">🚀 Ready to Display Detection Output</h3>
-                    <p>Set the duration and click "Run Detection" to generate detection cards</p>
+                # Tampilan awal
+                st.markdown(f"""
+                <div style="text-align: center; padding: 140px; border: 2px dashed #ccc; border-radius: 10px; background: #f9f9f9;">
+                    <h3 style="color: #666;">🚀 Ready to Run Display Detection</h3>
+                    <p>Set duration and click "Run Detection"</p>
                 </div>
                 """, unsafe_allow_html=True)
 
-        # ================================
-        # METRIK TAMBAHAN DI BAWAHNYA
-        # ================================
+        # Metrik tambahan
         st.markdown("---")
         stats = get_detection_stats(event_history)
 
